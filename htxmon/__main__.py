@@ -10,7 +10,7 @@ import time
 import webbrowser
 
 from . import __version__, netutil
-from .config import ROOT, load_config
+from .config import ROOT, ensure_example, load_config
 from .engine import RuleEngine
 from .feed import PriceFeed
 from .notify import Notifier
@@ -82,6 +82,7 @@ def cmd_check(cfg: dict) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     cfg = load_config()
+    ensure_example()
     if args.port:
         cfg["port"] = args.port
     if args.host:

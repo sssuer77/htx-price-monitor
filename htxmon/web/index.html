@@ -80,6 +80,7 @@
           </label>
           <div class="sep"></div>
           <label class="line"><input type="checkbox" id="cfg-ui"> 界面提醒</label>
+          <label class="line"><input type="checkbox" id="cfg-ball"> 桌面悬浮球提醒</label>
           <label class="line"><input type="checkbox" id="cfg-sound"> 声音提醒</label>
           <label class="line"><input type="checkbox" id="cfg-toast"> Windows 系统通知</label>
           <label class="line">Webhook
@@ -93,6 +94,12 @@
             </select>
           </label>
           <input id="cfg-hook" type="text" placeholder="https://... 留空表示不启用">
+          <div class="sep"></div>
+          <label class="line"><input type="checkbox" id="cfg-ball-enabled"> 启动时显示桌面悬浮球</label>
+          <label class="line">悬浮球直径（像素，48~160）
+            <input type="number" id="cfg-ball-size" min="48" max="160" step="8" style="width:80px">
+          </label>
+          <div class="hint">悬浮球：左键单击打开控制台，拖动可移动位置，右键有菜单。</div>
           <div class="sep"></div>
           <label class="line"><input type="checkbox" id="cfg-llm"> 启用 LLM 兜底解析（本地规则看不懂时才调用）</label>
           <div class="row small">

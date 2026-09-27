@@ -24,6 +24,22 @@ from .store import EventLog, RuleStore
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
+def _normalize_symbol(raw: Any) -> str | None:
+    """把用户输入的各种写法统一成 BTC-USDT。不合法返回 None。"""
+    sym = str(raw or "").upper().strip().replace("/", "-").replace("_", "-")
+    if not sym:
+        return None
+    sym = sym.replace(" ", "")
+    if "-" not in sym:
+        sym += "-USDT"
+    base, _, quote = sym.partition("-")
+    if quote in ("", "USD"):
+        quote = "USDT"
+    if quote != "USDT" or not base.isalnum() or not (1 <= len(base) <= 12):
+        return None
+    return f"{base}-USDT"
+
+
 class App:
     """把各模块组装成一个应用对象。"""
 
@@ -36,6 +52,7 @@ class App:
         self.feed = PriceFeed(cfg, on_tick=self._on_tick)
         self.engine: RuleEngine = RuleEngine(self.store, self.feed, self.notifier, self.events)
         self.started_at = time.time()
+        self.ball = None            # 由 __main__ 注入 FloatingBall 实例
 
     def _log(self, level: str, message: str) -> None:
         self.events.add(level, message)
@@ -85,6 +102,11 @@ class App:
                         "enabled": bool(self.cfg["llm"].get("enabled")),
                         "model": self.cfg["llm"].get("model", ""),
                         "has_key": bool(self.cfg["llm"].get("api_key")),
+                    },
+                    "ball": {
+                        "enabled": bool(self.cfg.get("ball", {}).get("enabled", True)),
+                        "size": self.cfg.get("ball", {}).get("size", 72),
+                        "active": self.ball is not None,
                     },
                 },
                 "stats": {"fired_total": self.engine.fired_total,
@@ -156,6 +178,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "channels": res})
             if path == "/api/symbol/add":
                 return self._json(self._handle_add_symbol(body))
+            if path == "/api/symbol/remove":
+                return self._json(self._handle_remove_symbol(body))
             return self._json({"ok": False, "error": "未知接口"}, 404)
         except Exception as exc:
             self.app.events.add("error", f"接口 {path} 异常: {exc}")
@@ -202,9 +226,14 @@ class Handler(BaseHTTPRequestHandler):
         if "enable_ws" in body:
             cfg["enable_ws"] = bool(body["enable_ws"])
         if "notify" in body and isinstance(body["notify"], dict):
-            for k in ("ui", "sound", "toast", "webhook", "webhook_kind"):
+            for k in ("ui", "ball", "sound", "toast", "webhook", "webhook_kind"):
                 if k in body["notify"]:
                     cfg["notify"][k] = body["notify"][k]
+        if "ball" in body and isinstance(body["ball"], dict):
+            bcfg = cfg.setdefault("ball", {})
+            for k in ("enabled", "size", "alpha", "bubble_sec"):
+                if k in body["ball"]:
+                    bcfg[k] = body["ball"][k]
         if "llm" in body and isinstance(body["llm"], dict):
             for k in ("enabled", "api_key", "base_url", "model"):
                 if k in body["llm"]:
@@ -217,20 +246,43 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "config": cfg.get("notify")}
 
     def _handle_add_symbol(self, body: dict) -> dict:
-        sym = str(body.get("symbol") or "").upper().strip()
-        if not sym.endswith("-USDT"):
-            sym = sym + "-USDT"
-        if len(sym) < 7:
-            return {"ok": False, "error": "合约代码不合法"}
-        symbols = self.app.cfg.setdefault("symbols", [])
-        if sym in symbols:
-            return {"ok": True, "symbols": symbols}
-        symbols.append(sym)
+        sym = _normalize_symbol(body.get("symbol"))
+        if not sym:
+            return {"ok": False, "error": "合约代码不合法，正确写法例如 DOGE-USDT"}
+        feed = self.app.feed
+        if feed.has_symbol(sym):
+            return {"ok": True, "added": False, "symbol": sym, "symbols": list(feed.symbols)}
+        feed.add_symbol(sym)
+        self.app.cfg["symbols"] = list(feed.symbols)
         save_config(self.app.cfg)
-        self.app.feed.symbols = list(symbols)
-        self.app.feed._history.setdefault(sym, __import__("collections").deque())
-        self.app.events.add("info", f"已加入监控合约 {sym}（重启后开始推送）")
-        return {"ok": True, "symbols": symbols}
+        self.app.events.add("info", f"已加入监控合约 {sym}（即时生效）", symbol=sym)
+        return {"ok": True, "added": True, "symbol": sym, "symbols": list(feed.symbols)}
+
+    def _handle_remove_symbol(self, body: dict) -> dict:
+        sym = _normalize_symbol(body.get("symbol"))
+        if not sym:
+            return {"ok": False, "error": "合约代码不合法"}
+        feed = self.app.feed
+        if not feed.has_symbol(sym):
+            return {"ok": False, "error": f"{sym} 不在监控列表中"}
+        if len(feed.symbols) <= 1:
+            return {"ok": False, "error": "至少要保留一个监控合约"}
+
+        removed_rules = 0
+        if body.get("purge_rules", True):
+            for rule in list(self.app.store.all()):
+                if rule.symbol == sym:
+                    self.app.store.remove(rule.id)
+                    removed_rules += 1
+        feed.remove_symbol(sym)
+        self.app.cfg["symbols"] = list(feed.symbols)
+        save_config(self.app.cfg)
+        msg = f"已移出监控合约 {sym}"
+        if removed_rules:
+            msg += f"，并删除 {removed_rules} 条相关规则"
+        self.app.events.add("info", msg, symbol=sym)
+        return {"ok": True, "symbol": sym, "symbols": list(feed.symbols),
+                "removed_rules": removed_rules}
 
     # ---- SSE ----
     def _stream(self) -> None:

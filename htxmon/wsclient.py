@@ -11,6 +11,7 @@ import hashlib
 import os
 import socket
 import struct
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -42,6 +43,7 @@ class WebSocketClient:
         self._frag_op: int | None = None
         self._frag_data = bytearray()
         self._last_ping = 0.0
+        self._send_lock = threading.RLock()
 
     # ------------------------------------------------------------ 连接
     def connect(self) -> None:
@@ -93,6 +95,10 @@ class WebSocketClient:
             raise WebSocketError("Sec-WebSocket-Accept 校验失败")
 
     # ------------------------------------------------------------ 收发
+    @property
+    def connected(self) -> bool:
+        return self.sock is not None
+
     def send_text(self, text: str) -> None:
         self._send_frame(OP_TEXT, text.encode("utf-8"))
 
@@ -104,8 +110,6 @@ class WebSocketClient:
             raise WebSocketError(str(exc)) from exc
 
     def _send_frame(self, opcode: int, payload: bytes) -> None:
-        if not self.sock:
-            raise WebSocketError("未连接")
         header = bytearray()
         header.append(0x80 | opcode)
         length = len(payload)
@@ -120,7 +124,10 @@ class WebSocketClient:
         mask = os.urandom(4)
         header += mask
         masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-        self.sock.sendall(bytes(header) + masked)
+        with self._send_lock:
+            if not self.sock:
+                raise WebSocketError("未连接")
+            self.sock.sendall(bytes(header) + masked)
 
     def recv_text(self) -> str | None:
         """返回一条完整文本消息；超时返回 None。"""

@@ -7,6 +7,7 @@
 - **零第三方依赖**，只用 Python 标准库（3.9+ 可用）。
 - 设计原则是「**Agent 写规则，引擎跑规则**」：自然语言解析只在建规则时跑一次，
   实时判断交给本地确定性状态机，因此**没有幻觉、没有额外网络延迟**。
+- **桌面悬浮球**：常驻置顶、可拖动，实时显示行情，有提醒就弹气泡——不用一直开着浏览器。
 
 ---
 
@@ -22,6 +23,7 @@ python -m htxmon
 ```
 
 启动后浏览器会自动打开 <http://127.0.0.1:8971/>，在顶部输入框写一句话，回车即可。
+桌面右下角同时会出现一个**悬浮球**，实时显示行情涨跌，有提醒时会弹气泡并亮起角标。
 
 首次使用建议先做连通性自检：
 
@@ -94,7 +96,8 @@ AVAX / 雪崩         DOT / 波卡              LINK / 链环
 
 ## 界面功能
 
-- **实时行情**：每个合约显示最新价、24h 涨跌幅，以及当前数据来源（WS / REST）。
+- **实时行情**：每个合约显示最新价、24h 涨跌幅，以及当前数据来源（WS / REST）；
+  右上角 **×** 可把该合约移出监控（会提示同时删除它的几条规则）。
 - **监控规则**：可暂停 / 恢复、删除、一键清理已触发规则。
 - **提醒记录**：最近 200 条事件（含规则、触发价、通知通道结果）。
 - **状态灯**：界面(SSE) / WS / REST / 延迟 / 证书，一眼看出链路是否健康。
@@ -105,11 +108,34 @@ AVAX / 雪崩         DOT / 波卡              LINK / 链环
 
 ---
 
+## 桌面悬浮球
+
+启动后会有一个圆形小球常驻桌面，**始终置顶、不会被别的窗口盖住**。
+
+| 操作 | 效果 |
+| --- | --- |
+| 左键拖动 | 移动位置（自动记住，下次启动回到原处） |
+| 左键单击 | 打开控制台网页；若正在弹气泡，则先收起气泡 |
+| 右键 | 菜单：打开控制台 / 清除角标 / 声音提醒开关 / 退出程序 |
+| 有提醒时 | 球体边框变琥珀色、右上角出现红色未读角标、旁边弹出气泡显示完整提醒内容 |
+
+球面上显示的是最近一次提醒涉及的币种（没有提醒时是监控列表的第一个），
+中间是 24h 涨跌幅（涨绿跌红），下面是现价。
+
+- 想关掉悬浮球：`python -m htxmon --no-ball`，或在设置面板取消「启动时显示桌面悬浮球」。
+- 只想要桌面提醒、不要浏览器弹窗：在设置面板关掉「界面提醒」，保留「桌面悬浮球提醒」。
+- 悬浮球依赖 Tkinter（Python 自带）。若当前 Python 没装 Tkinter，程序会打印一行提示并继续运行，
+  其它功能不受影响。
+- Linux / macOS 上会用半透明方块代替圆形（`-transparentcolor` 是 Windows 特性）。
+
+---
+
 ## 提醒通道
 
 | 通道 | 说明 |
 | --- | --- |
 | `ui` | 界面弹窗 + 提醒记录（通过 SSE 实时推送） |
+| `ball` | 桌面悬浮球弹气泡 + 未读角标 |
 | `sound` | Windows `winsound.Beep` 三声，1 秒内自动去重 |
 | `toast` | Windows 系统通知中心横幅（PowerShell 调用 WinRT） |
 | `webhook` | POST 到指定 URL，支持企业微信 / 钉钉 / 飞书 / Server酱 / Telegram / 通用 JSON |
@@ -136,6 +162,10 @@ AVAX / 雪崩         DOT / 波卡              LINK / 链环
 | `tls_verify` | `true` | 证书校验，**不建议关闭** |
 | `notify.*` | 见上 | 各提醒通道开关与 Webhook 配置 |
 | `llm.enabled` | `false` | LLM 兜底解析，仅在本地解析失败时调用 |
+| `ball.enabled` | `true` | 启动时是否显示桌面悬浮球 |
+| `ball.size` | `72` | 悬浮球直径（像素，48~160） |
+| `ball.x` / `ball.y` | `null` | 悬浮球位置，拖动后自动写入；`null` = 默认在屏幕右侧 |
+| `ball.bubble_sec` | `8` | 提醒气泡停留秒数 |
 
 ---
 
@@ -146,6 +176,7 @@ python -m htxmon                      :: 启动控制台
 python -m htxmon --port 9000          :: 换端口
 python -m htxmon --no-browser         :: 不自动开浏览器
 python -m htxmon --no-ws              :: 强制只用 REST 轮询
+python -m htxmon --no-ball            :: 不显示桌面悬浮球
 python -m htxmon --check              :: 证书 / REST / WS 连通性自检
 python -m htxmon --parse "BTC 跌破 83000 提醒我"   :: 只解析不启动，用于验证语法
 python -m htxmon --version
@@ -172,6 +203,7 @@ python -m unittest discover -s tests
 | POST | `/api/rule/toggle` | `{"id":"r_xxx"}` 暂停 / 恢复 |
 | POST | `/api/rules/clear` | `{"status":"triggered"}` 清理规则 |
 | POST | `/api/symbol/add` | `{"symbol":"DOGE-USDT"}` 加入监控 |
+| POST | `/api/symbol/remove` | `{"symbol":"DOGE-USDT","purge_rules":true}` 移出监控（默认同时删掉该币种的规则） |
 | POST | `/api/config` | 更新配置（WS、轮询、通道、LLM） |
 | POST | `/api/test-notify` | 发一条测试提醒，返回各通道结果 |
 
@@ -222,6 +254,7 @@ htx-price-monitor/
 │  ├─ netutil.py        CA 证书自动发现 + HTTP 工具
 │  ├─ store.py          规则持久化 + 事件日志
 │  ├─ notify.py         界面 / 声音 / 系统通知 / Webhook
+│  ├─ ball.py           桌面悬浮球（Tkinter，独立线程）
 │  ├─ server.py         HTTP 服务 + SSE
 │  ├─ llm.py            可选 LLM 兜底解析
 │  └─ web/              控制台前端（原生 HTML/CSS/JS）
@@ -242,6 +275,9 @@ htx-price-monitor/
 | 中文显示成乱码 | 控制台执行 `chcp 65001`；`run.bat` 已内置 |
 | 规则一直不触发 | 看一眼规则卡片上的「就绪说明」，穿越型规则需要价格先到过对面 |
 | 端口被占用 | `python -m htxmon --port 9000` |
+| 悬浮球没出现 | 当前 Python 没装 Tkinter（启动时会打印提示）、加了 `--no-ball`，或设置里关了「启动时显示桌面悬浮球」 |
+| 悬浮球挡窗口 | 直接拖走，位置会自动记住；想彻底关掉用 `--no-ball` |
+| 移出合约后又想加回来 | 在「实时行情」下方输入框写 `DOGE` 或 `DOGE-USDT` 即可，即时生效、无需重启 |
 
 ---
 

@@ -90,8 +90,19 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if args.no_ws:
         cfg["enable_ws"] = False
 
+    stop_evt = threading.Event()
     app = App(cfg)
     app.start()
+
+    ball = None
+    if cfg.get("ball", {}).get("enabled", True) and not args.no_ball:
+        from .ball import FloatingBall
+
+        ball = FloatingBall(app, on_quit=stop_evt.set)
+        app.ball = ball
+        app.notifier.ball = ball
+        ball.start()
+
     httpd = build_server(app, cfg["host"], int(cfg["port"]))
     url = f"http://{cfg['host']}:{cfg['port']}/"
     print("=" * 62)
@@ -100,16 +111,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print("  提示: 首次运行建议先执行  python -m htxmon --check  做连通性自检")
     print(f"  监控合约: {', '.join(cfg.get('symbols', []))}")
     print(f"  已有规则: {len(app.store.all())} 条")
+    print(f"  悬浮球: {'已开启（可拖动，右键有菜单）' if ball else '已关闭'}")
     print("  停止: Ctrl+C")
     print("=" * 62)
     if cfg.get("open_browser", True) and not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+
+    httpd_thread = threading.Thread(target=httpd.serve_forever,
+                                    kwargs={"poll_interval": 0.3},
+                                    name="http", daemon=True)
+    httpd_thread.start()
     try:
-        httpd.serve_forever()
+        stop_evt.wait()
     except KeyboardInterrupt:
         print("\n正在退出…")
     finally:
         app.stop()
+        if ball:
+            ball.stop()
         httpd.shutdown()
         httpd.server_close()
     return 0
@@ -124,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, help="监听端口，默认取 config.json")
     ap.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
     ap.add_argument("--no-ws", action="store_true", help="强制关闭 WebSocket，仅用 REST 轮询")
+    ap.add_argument("--no-ball", action="store_true", help="不显示桌面悬浮球")
     args = ap.parse_args(argv)
 
     cfg = load_config()

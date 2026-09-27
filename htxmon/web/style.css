@@ -79,3 +79,12 @@ button.ghost{background:transparent}
 @keyframes slide{from{transform:translateX(30px);opacity:0}to{transform:none;opacity:1}}
 body.flash{animation:flash .6s ease 2}
 @keyframes flash{0%,100%{background-color:transparent}50%{background-color:#2a230c}}
+
+/* 行情卡片上的「移出监控」按钮（常驻可见，悬停高亮，避免和右上角来源徽章重叠） */
+.tick{position:relative}
+.tick .top{padding-right:24px}
+.tick-del{position:absolute;top:7px;right:7px;width:20px;height:20px;padding:0;line-height:1;
+  font-size:14px;border-radius:6px;background:transparent;border:1px solid var(--line);
+  color:var(--dim);cursor:pointer;opacity:.4;transition:opacity .15s,color .15s,border-color .15s}
+.tick:hover .tick-del{opacity:1}
+.tick-del:hover{color:var(--dn);border-color:var(--dn);background:#2a1420}

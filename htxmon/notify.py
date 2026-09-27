@@ -33,18 +33,21 @@ class Notifier:
         self.ncfg = cfg.get("notify", {})
         self.log = logger or (lambda level, msg: None)
         self._last_sound = 0.0
+        self.ball = None            # 由 __main__ 注入 FloatingBall 实例
 
     # -------------------------------------------------- 对外入口
     def send(self, title: str, body: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         results: dict[str, Any] = {}
         payload = payload or {}
-        for chan in ("ui", "sound", "toast", "webhook"):
-            if not self.ncfg.get(chan if chan != "webhook" else "webhook"):
+        for chan in ("ui", "ball", "sound", "toast", "webhook"):
+            if not self.ncfg.get(chan):
                 results[chan] = "disabled"
                 continue
             try:
                 if chan == "ui":
                     results[chan] = "ok"          # 界面通道由 EventLog + SSE 完成
+                elif chan == "ball":
+                    results[chan] = self._ball(title, body)
                 elif chan == "sound":
                     results[chan] = self._sound()
                 elif chan == "toast":
@@ -55,6 +58,12 @@ class Notifier:
                 results[chan] = f"error: {exc}"
                 self.log("warn", f"{chan} 通道发送失败: {exc}")
         return results
+
+    def _ball(self, title: str, body: str) -> str:
+        if self.ball is None:
+            return "off"
+        self.ball.notify_alert(title, body)
+        return "ok"
 
     # -------------------------------------------------- 各通道实现
     def _sound(self) -> str:

@@ -48,11 +48,24 @@ function renderTickers() {
     const lat = t.delivery_ms === null || t.delivery_ms === undefined ? "-" : t.delivery_ms.toFixed(0) + "ms";
     return `<div class="tick">
       <div class="top"><span class="sym">${esc(s)}</span><span class="src">${esc(t.src.toUpperCase())}</span></div>
+      <button class="tick-del" data-sym="${esc(s)}" title="移出监控">×</button>
       <div class="price ${cls(chg)}">${fmt(t.price)}</div>
       <div class="meta"><span class="${cls(chg)}">${pct(chg)}</span>
         <span>H ${fmt(t.high24)}</span><span>L ${fmt(t.low24)}</span><span>延迟 ${lat}</span></div>
     </div>`;
   }).join("");
+}
+
+async function removeSymbol(sym) {
+  const n = state.rules.filter((r) => r.symbol === sym).length;
+  const tail = n ? `\n同时会删除该币种的 ${n} 条监控规则。` : "";
+  if (!confirm(`把 ${sym} 移出实时行情监控？${tail}`)) return;
+  const r = await api("/api/symbol/remove", { symbol: sym, purge_rules: true });
+  if (!r.ok) return toast("删除失败", r.error || "未知错误", "err");
+  delete state.ticks[sym];
+  renderTickers();
+  toast("已移出监控", sym + (r.removed_rules ? `，并删除 ${r.removed_rules} 条规则` : ""), "ok");
+  refresh();
 }
 
 function ruleStateText(r) {
@@ -129,12 +142,17 @@ function renderConfig() {
   $("cfg-ws").checked = !!c.enable_ws;
   $("cfg-poll").value = c.poll_interval_sec;
   $("cfg-ui").checked = !!c.notify.ui;
+  $("cfg-ball").checked = !!c.notify.ball;
   $("cfg-sound").checked = !!c.notify.sound;
   $("cfg-toast").checked = !!c.notify.toast;
   $("cfg-hook").value = c.notify.webhook || "";
   $("cfg-hook-kind").value = c.notify.webhook_kind || "generic";
   $("cfg-llm").checked = !!c.llm.enabled;
   $("cfg-llm-model").value = c.llm.model || "";
+  if (c.ball) {
+    $("cfg-ball-enabled").checked = !!c.ball.enabled;
+    $("cfg-ball-size").value = c.ball.size || 72;
+  }
 }
 
 /* ---------------------------------------------------------------- 数据 */
@@ -210,6 +228,10 @@ function bind() {
     else if (btn.dataset.act === "toggle") await api("/api/rule/toggle", { id });
     refresh();
   });
+  $("tickers").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tick-del");
+    if (btn) removeSymbol(btn.dataset.sym);
+  });
   $("btn-clear-done").onclick = async () => { await api("/api/rules/clear", { status: "triggered" }); refresh(); };
   $("btn-test").onclick = async () => {
     const r = await api("/api/test-notify", {});
@@ -227,8 +249,10 @@ function bind() {
       poll_interval_sec: parseFloat($("cfg-poll").value) || 3,
       notify: {
         ui: $("cfg-ui").checked, sound: $("cfg-sound").checked, toast: $("cfg-toast").checked,
+        ball: $("cfg-ball").checked,
         webhook: $("cfg-hook").value.trim(), webhook_kind: $("cfg-hook-kind").value,
       },
+      ball: { enabled: $("cfg-ball-enabled").checked, size: parseInt($("cfg-ball-size").value, 10) || 72 },
       llm: {
         enabled: $("cfg-llm").checked, model: $("cfg-llm-model").value.trim(),
         api_key: $("cfg-llm-key").value.trim(), base_url: $("cfg-llm-url").value.trim(),

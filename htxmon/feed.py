@@ -62,6 +62,8 @@ class PriceFeed:
         self._ticks: dict[str, Tick] = {}
         self._history: dict[str, deque[tuple[float, float]]] = {}
         self._lock = threading.RLock()
+        self._ws: WebSocketClient | None = None
+        self._ws_lock = threading.RLock()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._clock_offset_ms: float | None = None
@@ -88,6 +90,57 @@ class PriceFeed:
 
     def stop(self) -> None:
         self._stop.set()
+
+    # ------------------------------------------------------------ 监控列表增删
+    def has_symbol(self, symbol: str) -> bool:
+        return symbol.upper().strip() in self.symbols
+
+    def add_symbol(self, symbol: str) -> bool:
+        """加入监控。返回 True 表示新增，False 表示本来就在。立即对 WS 生效。"""
+        sym = symbol.upper().strip()
+        with self._lock:
+            if sym in self.symbols:
+                return False
+            self.symbols.append(sym)
+            self._history.setdefault(sym, deque())
+        self._sync_subscriptions()
+        return True
+
+    def remove_symbol(self, symbol: str) -> bool:
+        """移出监控并清掉它的行情与历史。返回 True 表示确实删掉了。"""
+        sym = symbol.upper().strip()
+        with self._lock:
+            if sym not in self.symbols:
+                return False
+            self.symbols.remove(sym)
+            self._ticks.pop(sym, None)
+            self._history.pop(sym, None)
+        with self._ws_lock:
+            ws = self._ws
+            if ws and ws.connected:
+                for ch in ("trade.detail", "detail"):
+                    try:
+                        ws.send_text(json.dumps(
+                            {"unsub": f"market.{sym}.{ch}", "id": f"u-{ch}-{sym}"}))
+                    except Exception:
+                        pass
+        self._sync_subscriptions()
+        return True
+
+    def _sync_subscriptions(self) -> None:
+        """把当前 symbols 同步到已连接的 WS；未连接时下次重连会自动带上。"""
+        with self._ws_lock:
+            ws = self._ws
+            if not ws or not ws.connected:
+                return
+            try:
+                for sym in list(self.symbols):
+                    for ch in ("trade.detail", "detail"):
+                        ws.send_text(json.dumps(
+                            {"sub": f"market.{sym}.{ch}", "id": f"t-{ch}-{sym}"}))
+                self.status["ws"]["subscribed"] = list(self.symbols)
+            except Exception as exc:
+                self.status["ws"]["last_error"] = f"订阅同步失败: {exc}"
 
     # ------------------------------------------------------------ 取数
     def tick(self, symbol: str) -> Tick | None:
@@ -194,7 +247,9 @@ class PriceFeed:
             try:
                 ws = WebSocketClient(self.ws_url, timeout=20, verify=self.verify)
                 ws.connect()
-                for sym in self.symbols:
+                with self._ws_lock:
+                    self._ws = ws
+                for sym in list(self.symbols):
                     ws.send_text(json.dumps({"sub": f"market.{sym}.trade.detail", "id": f"t-{sym}"}))
                     ws.send_text(json.dumps({"sub": f"market.{sym}.detail", "id": f"d-{sym}"}))
                 self.status["ws"].update({"connected": True, "last_error": None,
@@ -214,6 +269,8 @@ class PriceFeed:
             except Exception as exc:
                 self.status["ws"].update({"connected": False, "last_error": str(exc)[:200]})
                 self.status["ws"]["reconnects"] = self.status["ws"].get("reconnects", 0) + 1
+                with self._ws_lock:
+                    self._ws = None
                 if ws:
                     ws.close()
                 self._stop.wait(min(backoff, 30))

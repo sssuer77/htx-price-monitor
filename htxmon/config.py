@@ -26,11 +26,20 @@ DEFAULTS: dict[str, Any] = {
     "tls_verify": True,
     "notify": {
         "ui": True,
+        "ball": True,
         "sound": True,
         "toast": True,
         "webhook": "",
         "webhook_kind": "generic",
         "log_file": "data/events.jsonl",
+    },
+    "ball": {
+        "enabled": True,
+        "size": 72,
+        "alpha": 0.95,
+        "x": None,
+        "y": None,
+        "bubble_sec": 8,
     },
     "llm": {
         "enabled": False,

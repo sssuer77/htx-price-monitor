@@ -1,0 +1,31 @@
+{
+  "host": "127.0.0.1",
+  "port": 8971,
+  "open_browser": true,
+  "symbols": [
+    "BTC-USDT",
+    "ETH-USDT",
+    "SOL-USDT"
+  ],
+  "rest_base": "https://api.hbdm.com",
+  "ws_url": "wss://api.hbdm.com/linear-swap-ws",
+  "enable_ws": true,
+  "poll_interval_sec": 3.0,
+  "history_bootstrap_min": 120,
+  "tls_verify": true,
+  "notify": {
+    "ui": true,
+    "sound": true,
+    "toast": true,
+    "webhook": "",
+    "webhook_kind": "generic",
+    "log_file": "data/events.jsonl"
+  },
+  "llm": {
+    "enabled": false,
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "model": "gpt-4o-mini",
+    "timeout_sec": 20
+  }
+}

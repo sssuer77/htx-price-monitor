@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运行时数据（规则、事件日志）
+data/*.json
+data/*.jsonl
+config.json

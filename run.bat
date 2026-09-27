@@ -3,23 +3,43 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
+rem ---------------------------------------------------------------
+rem  HTX Contract Price Monitor - launcher
+rem  NOTE: keep this file ASCII-only and CRLF. cmd.exe mis-parses
+rem        non-ASCII bytes, and LF-only .bat breaks if-blocks.
+rem ---------------------------------------------------------------
+
 set "PY="
 if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
+
 if not defined PY (
   where python >nul 2>nul && set "PY=python"
 )
+
 if not defined PY (
   where py >nul 2>nul && set "PY=py -3"
 )
+
 if not defined PY (
-  echo [错误] 没找到 Python，请安装 Python 3.9+ 并勾选 "Add to PATH"
+  echo [ERROR] Python not found.
+  echo         Install Python 3.9+ from https://www.python.org/downloads/
+  echo         and tick "Add python.exe to PATH" during setup.
+  echo.
   pause
   exit /b 1
 )
 
 %PY% -m htxmon %*
-if errorlevel 1 (
+set "RC=%ERRORLEVEL%"
+
+if not "%RC%"=="0" (
   echo.
-  echo [提示] 如果提示没有 CA 证书或 HTTPS 失败，可先运行:  %PY% -m htxmon --check
+  echo [HINT] htxmon exited with code %RC%.
+  echo        CA / HTTPS error   : %PY% -m htxmon --check
+  echo        WebSocket blocked  : harmless, falls back to REST polling
+  echo        Anything else      : see README.md section "????"
+  echo.
   pause
 )
+
+exit /b %RC%

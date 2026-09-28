@@ -16,6 +16,7 @@ from bisect import bisect_right
 from collections import deque
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable
+from urllib.parse import quote
 
 from .netutil import http_json
 from .wsclient import WebSocketClient, WebSocketError
@@ -73,6 +74,7 @@ class PriceFeed:
             "ws": {"connected": False, "last_msg_ts": None, "reconnects": 0,
                    "last_error": None, "subscribed": []},
             "rest": {"last_ok_ts": None, "last_error": None, "latency_ms": None, "calls": 0},
+            "bad": {},
             "clock_offset_ms": None,
             "started_at": time.time(),
         }
@@ -142,6 +144,36 @@ class PriceFeed:
             except Exception as exc:
                 self.status["ws"]["last_error"] = f"订阅同步失败: {exc}"
 
+    # ------------------------------------------------------------ 合约校验
+    CONTRACT_INFO_PATH = "/linear-swap-api/v1/swap_contract_info"
+
+    def fetch_contract_info(self, symbol: str, timeout: float = 8.0) -> tuple[str, dict[str, Any]]:
+        """向 HTX 查证合约是否存在。
+
+        返回 (结果, 详情)：
+          "ok"   合约存在，详情带 contract_size / price_tick 等
+          "none" HTX 明确回答「不存在」
+          "err"  网络或接口异常，无法判断（调用方应放行并提示，而不是拒绝）
+        """
+        url = f"{self.rest_base}{self.CONTRACT_INFO_PATH}?contract_code={quote(symbol, safe='')}"
+        try:
+            data = http_json(url, timeout=timeout, verify=self.verify)
+        except Exception as exc:
+            return "err", {"error": str(exc)}
+        rows = data.get("data")
+        if data.get("status") == "ok" and isinstance(rows, list) and rows:
+            return "ok", rows[0]
+        return "none", {"error": data.get("err_msg") or "合约不存在"}
+
+    # ------------------------------------------------------------ 单个合约的拉取状态
+    def _mark_bad(self, symbol: str, err: str) -> None:
+        with self._lock:
+            self.status.setdefault("bad", {})[symbol] = err[:160]
+
+    def _mark_ok(self, symbol: str) -> None:
+        with self._lock:
+            self.status.setdefault("bad", {}).pop(symbol, None)
+
     # ------------------------------------------------------------ 取数
     def tick(self, symbol: str) -> Tick | None:
         with self._lock:
@@ -196,7 +228,8 @@ class PriceFeed:
 
     # ------------------------------------------------------------ REST
     def _fetch_rest(self, symbol: str) -> Tick | None:
-        url = f"{self.rest_base}/linear-swap-ex/market/detail/merged?contract_code={symbol}"
+        url = (f"{self.rest_base}/linear-swap-ex/market/detail/merged"
+               f"?contract_code={quote(symbol, safe='')}")
         t0 = time.time()
         data = http_json(url, timeout=10, verify=self.verify)
         rtt_ms = (time.time() - t0) * 1000
@@ -215,6 +248,7 @@ class PriceFeed:
             "latency_ms": round(rtt_ms, 1),
             "calls": self.status["rest"].get("calls", 0) + 1,
         }
+        self._mark_ok(symbol)
         return Tick(
             symbol=symbol, price=price, local_ts=time.time(), src="rest",
             exch_ts=(server_ms / 1000) if server_ms else None,
@@ -237,6 +271,7 @@ class PriceFeed:
                         self._emit(tick)
                 except Exception as exc:
                     self.status["rest"]["last_error"] = f"{sym}: {exc}"
+                    self._mark_bad(sym, str(exc))
             self._stop.wait(self.poll_interval)
 
     # ------------------------------------------------------------ WS

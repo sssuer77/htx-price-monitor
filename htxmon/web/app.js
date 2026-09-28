@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { ticks: {}, rules: [], events: [], cfg: null, lastEventSeq: 0, notifyOk: false };
+const state = { ticks: {}, bad: {}, rules: [], events: [], cfg: null, lastEventSeq: 0, notifyOk: false };
 
 /* ---------------------------------------------------------------- 工具 */
 function fmt(v, digits) {
@@ -39,16 +39,28 @@ async function api(path, body) {
 /* ---------------------------------------------------------------- 渲染 */
 function renderTickers() {
   const box = $("tickers");
-  const syms = Object.keys(state.ticks);
-  if (!syms.length) { box.innerHTML = '<div class="hint">等待行情数据…</div>'; return; }
-  syms.sort();
+  // 以「监控列表」为准渲染：刚加入还没拿到行情的合约也要显示出来，
+  // 否则用户会以为添加失败了（之前就是这个 bug）。
+  const watch = (state.cfg && state.cfg.symbols) || [];
+  const syms = Array.from(new Set([...watch, ...Object.keys(state.ticks)])).sort();
+  if (!syms.length) { box.innerHTML = '<div class="hint">还没有监控任何合约</div>'; return; }
   box.innerHTML = syms.map((s) => {
+    const del = `<button class="tick-del" data-sym="${esc(s)}" title="移出监控">×</button>`;
     const t = state.ticks[s];
+    if (!t) {
+      const err = (state.bad || {})[s];
+      return `<div class="tick pending">
+        <div class="top"><span class="sym">${esc(s)}</span><span class="src">等待</span></div>
+        ${del}
+        <div class="price dim">--</div>
+        <div class="meta"><span class="${err ? "err-text" : ""}">${err ? "拉取失败：" + esc(err) : "正在拉取行情…"}</span></div>
+      </div>`;
+    }
     const chg = t.change_pct24;
     const lat = t.delivery_ms === null || t.delivery_ms === undefined ? "-" : t.delivery_ms.toFixed(0) + "ms";
     return `<div class="tick">
       <div class="top"><span class="sym">${esc(s)}</span><span class="src">${esc(t.src.toUpperCase())}</span></div>
-      <button class="tick-del" data-sym="${esc(s)}" title="移出监控">×</button>
+      ${del}
       <div class="price ${cls(chg)}">${fmt(t.price)}</div>
       <div class="meta"><span class="${cls(chg)}">${pct(chg)}</span>
         <span>H ${fmt(t.high24)}</span><span>L ${fmt(t.low24)}</span><span>延迟 ${lat}</span></div>
@@ -160,6 +172,7 @@ async function refresh() {
   const snap = await api("/api/state");
   state.ticks = {};
   for (const [k, v] of Object.entries(snap.feed.ticks || {})) state.ticks[k] = v;
+  state.bad = snap.feed.bad || {};
   state.rules = snap.rules || [];
   state.events = snap.events || [];
   state.cfg = snap.config;
@@ -240,8 +253,13 @@ function bind() {
   $("btn-sym").onclick = async () => {
     const v = $("sym-input").value.trim(); if (!v) return;
     const r = await api("/api/symbol/add", { symbol: v });
-    if (r.ok) { $("sym-input").value = ""; toast("已加入监控", v.toUpperCase(), "ok"); refresh(); }
-    else toast("失败", r.error || "", "err");
+    if (r.ok) {
+      $("sym-input").value = "";
+      toast(r.warning ? "已加入（有提示）" : "已加入监控",
+            (r.symbol || v.toUpperCase()) + (r.warning ? "：" + r.warning : ""),
+            r.warning ? "" : "ok");
+      refresh();
+    } else toast("加入失败", r.error || "未知错误", "err");
   };
   $("btn-save").onclick = async () => {
     await api("/api/config", {

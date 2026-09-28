@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,18 +25,29 @@ from .store import EventLog, RuleStore
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
+_SYMBOL_BASE_RE = re.compile(r"^[A-Z0-9]{1,15}$")
+
+
 def _normalize_symbol(raw: Any) -> str | None:
-    """把用户输入的各种写法统一成 BTC-USDT。不合法返回 None。"""
-    sym = str(raw or "").upper().strip().replace("/", "-").replace("_", "-")
+    """把用户输入的各种写法统一成 BTC-USDT。不合法返回 None。
+
+    只接受 ASCII 字母数字。中文（如「牛来-USDT」）必须挡在这里：
+    Python 的 str.isalnum() 对汉字也返回 True，放过去会让 REST 请求抛
+    "'ascii' codec can't encode" 编码错误，表现成「加进去了但永远没行情」。
+    """
+    # 空格 / 斜杠 / 下划线都当分隔符，避免「BTC USDT」被拼成「BTCUSDT-USDT」
+    sym = re.sub(r"[\s/_]+", "-", str(raw or "").upper().strip())
+    sym = re.sub(r"-+", "-", sym).strip("-")
     if not sym:
         return None
-    sym = sym.replace(" ", "")
     if "-" not in sym:
         sym += "-USDT"
-    base, _, quote = sym.partition("-")
-    if quote in ("", "USD"):
-        quote = "USDT"
-    if quote != "USDT" or not base.isalnum() or not (1 <= len(base) <= 12):
+    base, _, quote_ = sym.partition("-")
+    if quote_ in ("", "USD"):
+        quote_ = "USDT"
+    if quote_ != "USDT" or not _SYMBOL_BASE_RE.match(base):
+        return None
+    if base == "USDT":          # 「-USDT」这种写法会退化成 USDT-USDT，直接拒绝
         return None
     return f"{base}-USDT"
 
@@ -246,17 +258,35 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "config": cfg.get("notify")}
 
     def _handle_add_symbol(self, body: dict) -> dict:
-        sym = _normalize_symbol(body.get("symbol"))
+        raw = body.get("symbol")
+        sym = _normalize_symbol(raw)
         if not sym:
-            return {"ok": False, "error": "合约代码不合法，正确写法例如 DOGE-USDT"}
+            return {"ok": False,
+                    "error": f"「{raw}」不是合法的合约代码。只能填英文字母和数字，"
+                             f"正确写法例如 DOGE-USDT"}
         feed = self.app.feed
         if feed.has_symbol(sym):
             return {"ok": True, "added": False, "symbol": sym, "symbols": list(feed.symbols)}
+
+        # 先问 HTX 有没有这个合约，避免「加成功了却永远收不到行情」
+        verdict, info = feed.fetch_contract_info(sym)
+        if verdict == "none":
+            return {"ok": False,
+                    "error": f"HTX 没有 {sym} 这个永续合约（{info.get('error')}）"}
+        warn = None
+        if verdict == "err":
+            warn = (f"没能连上 HTX 校验合约（{info.get('error')}），已先加入，"
+                    f"若长时间没有行情请核对代码")
+
         feed.add_symbol(sym)
         self.app.cfg["symbols"] = list(feed.symbols)
         save_config(self.app.cfg)
-        self.app.events.add("info", f"已加入监控合约 {sym}（即时生效）", symbol=sym)
-        return {"ok": True, "added": True, "symbol": sym, "symbols": list(feed.symbols)}
+        msg = f"已加入监控合约 {sym}（即时生效）"
+        if warn:
+            msg += f"｜{warn}"
+        self.app.events.add("info", msg, symbol=sym)
+        return {"ok": True, "added": True, "symbol": sym,
+                "symbols": list(feed.symbols), "warning": warn}
 
     def _handle_remove_symbol(self, body: dict) -> dict:
         sym = _normalize_symbol(body.get("symbol"))

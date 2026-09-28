@@ -88,3 +88,8 @@ body.flash{animation:flash .6s ease 2}
   color:var(--dim);cursor:pointer;opacity:.4;transition:opacity .15s,color .15s,border-color .15s}
 .tick:hover .tick-del{opacity:1}
 .tick-del:hover{color:var(--dn);border-color:var(--dn);background:#2a1420}
+
+/* 已加入监控、但还没拿到行情的合约 */
+.tick.pending{border-style:dashed;opacity:.85}
+.tick.pending .price.dim{color:var(--dim);font-weight:600}
+.tick .meta .err-text{color:var(--dn)}

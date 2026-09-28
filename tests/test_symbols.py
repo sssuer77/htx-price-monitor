@@ -2,13 +2,16 @@
 
 import os
 import sys
+import types
 import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from htxmon.feed import PriceFeed, Tick  # noqa: E402
-from htxmon.server import _normalize_symbol  # noqa: E402
+from htxmon.parser import parse  # noqa: E402
+from htxmon.server import Handler, _normalize_symbol  # noqa: E402
+from htxmon.symbols import detect_symbol  # noqa: E402
 
 
 class TestNormalize(unittest.TestCase):
@@ -33,12 +36,17 @@ class TestNormalize(unittest.TestCase):
                     "BTC-USDT-EXTRA", "USDT"):
             self.assertIsNone(_normalize_symbol(bad), f"应判为非法: {bad!r}")
 
-    def test_chinese_rejected(self):
-        # 回归：Python 的 str.isalnum() 对汉字也返回 True，曾导致「牛来-USDT」
-        # 被当成合法合约写进配置，然后 REST 请求抛 ascii 编码错误、
-        # 事件里记着「已加入监控」但面板永远不显示行情。
-        for bad in ("牛来-USDT", "牛来", "比特币", "BTC-牛来", "狗狗币"):
-            self.assertIsNone(_normalize_symbol(bad), f"中文必须被拒绝: {bad!r}")
+    def test_chinese_accepted(self):
+        # HTX 真的用汉字当合约代码：「牛来-USDT」「哈基米-USDT」「币安人生-USDT」
+        # 都是链上迷因币的真实代码，必须放行（曾经被误判为非法而加不进去）。
+        self.assertEqual(_normalize_symbol("牛来-USDT"), "牛来-USDT")
+        self.assertEqual(_normalize_symbol("牛来"), "牛来-USDT")
+        self.assertEqual(_normalize_symbol("  牛来  "), "牛来-USDT")
+        self.assertEqual(_normalize_symbol("哈基米"), "哈基米-USDT")
+
+    def test_symbols_with_junk_rejected(self):
+        for bad in ("牛 来!", "<<BTC>>", "BTC!", "BTC-USDT-EXTRA", "btc@usdt"):
+            self.assertIsNone(_normalize_symbol(bad), f"应判为非法: {bad!r}")
 
     def test_space_as_separator(self):
         # 「BTC USDT」不应被拼成 BTCUSDT-USDT
@@ -116,6 +124,39 @@ class TestContractInfo(unittest.TestCase):
         self.assertIn("contract_code=BTC-USDT", seen["url"])
         self.assertTrue(seen["url"].isascii())
 
+    def test_chinese_symbol_is_percent_encoded(self):
+        # 这是「加进去了却永远没行情」的真正根因：中文合约代码必须百分号编码，
+        # 否则 urllib 会抛 "'ascii' codec can't encode characters"。
+        seen = {}
+
+        def fake(url, **kw):
+            seen["url"] = url
+            return {"status": "ok", "data": [{"contract_code": "牛来-USDT"}]}
+
+        with mock.patch("htxmon.feed.http_json", side_effect=fake):
+            verdict, _ = self.feed.fetch_contract_info("牛来-USDT")
+        self.assertEqual(verdict, "ok")
+        self.assertTrue(seen["url"].isascii(), "拼出来的 URL 必须是纯 ASCII")
+        self.assertIn("%E7%89%9B%E6%9D%A5-USDT", seen["url"])
+
+    def test_kline_and_rest_urls_are_encoded(self):
+        """行情和历史 K 线两条链路也必须编码（曾经漏了）。"""
+        seen = []
+        self.feed.symbols = ["牛来-USDT"]
+
+        def fake(url, **kw):
+            seen.append(url)
+            return {"status": "ok", "data": [],
+                    "tick": {"close": "0.112", "open": "0.1", "high": "0.12", "low": "0.09"}}
+
+        with mock.patch("htxmon.feed.http_json", side_effect=fake):
+            self.feed._fetch_rest("牛来-USDT")
+            self.feed._bootstrap_history()
+        self.assertEqual(len(seen), 2, f"应各请求一次，实际 {seen}")
+        for url in seen:
+            self.assertTrue(url.isascii(), f"URL 未编码: {url}")
+            self.assertIn("%E7%89%9B%E6%9D%A5-USDT", url)
+
 
 class TestPerSymbolErrors(unittest.TestCase):
     """面板要能显示「哪个合约拉不到行情」。"""
@@ -130,6 +171,84 @@ class TestPerSymbolErrors(unittest.TestCase):
         self.assertEqual(self.feed.status["bad"]["NOPE-USDT"], "not exist")
         self.feed._mark_ok("NOPE-USDT")
         self.assertNotIn("NOPE-USDT", self.feed.status["bad"])
+
+
+class TestChineseSymbolDetect(unittest.TestCase):
+    """中文合约代码的识别（HTX 的 牛来-USDT / 哈基米-USDT 不是笔误）。"""
+
+    def test_bare_chinese_name(self):
+        self.assertEqual(detect_symbol("牛来 跌破 0.1")[0], "牛来-USDT")
+
+    def test_full_chinese_code(self):
+        code, matched = detect_symbol("牛来-USDT 跌破 0.1")
+        self.assertEqual(code, "牛来-USDT")
+        self.assertEqual(matched, "牛来-USDT")
+
+    def test_chinese_glued_usdt(self):
+        self.assertEqual(detect_symbol("哈基米usdt 涨到 0.05")[0], "哈基米-USDT")
+
+    def test_alias_beats_literal_chinese_suffix(self):
+        self.assertEqual(detect_symbol("比特币USDT 跌破 83000")[0], "BTC-USDT")
+
+    def test_known_symbols_enable_other_chinese_names(self):
+        self.assertEqual(detect_symbol("拉布布 涨到 1", ["拉布布-USDT"])[0], "拉布布-USDT")
+
+    def test_known_symbols_longest_first(self):
+        known = ["1000PEPE-USDT", "PEPE-USDT"]
+        self.assertEqual(detect_symbol("1000PEPE 跌破 0.01", known)[0], "1000PEPE-USDT")
+        self.assertEqual(detect_symbol("PEPE 跌破 0.01", known)[0], "PEPE-USDT")
+
+    def test_ascii_not_regressed(self):
+        self.assertEqual(detect_symbol("BTC 跌破 83000")[0], "BTC-USDT")
+        self.assertEqual(detect_symbol("btcusdt 突破 1")[0], "BTC-USDT")
+        self.assertEqual(detect_symbol("狗狗币 跌到 0.05")[0], "DOGE-USDT")
+        self.assertEqual(detect_symbol("今天天气不错"), (None, None))
+
+    def test_chinese_parse_end_to_end(self):
+        res = parse("牛来 跌破 0.1 提醒我")
+        self.assertTrue(res.ok, res.warnings)
+        self.assertEqual(res.rules[0].symbol, "牛来-USDT")
+
+
+class _FakeFeed:
+    def __init__(self, symbols):
+        self.symbols = list(symbols)
+
+    def has_symbol(self, symbol):
+        return symbol.upper().strip() in self.symbols
+
+
+class _FakeApp:
+    """只实现 _handle_parse 用到的那几样，不碰网络。"""
+
+    def __init__(self, symbols):
+        self.feed = _FakeFeed(symbols)
+        self.cfg = {}
+        self.rules = []
+
+    def add_rule(self, rule):
+        self.rules.append(rule)
+        return "已就绪，等待触发"
+
+
+class TestUnmonitoredSymbolWarning(unittest.TestCase):
+    """规则用到没在监控列表里的合约时要明确报出来，不能默默不触发。"""
+
+    def _parse(self, text, symbols):
+        app = _FakeApp(symbols)
+        out = Handler._handle_parse(types.SimpleNamespace(app=app), {"text": text})
+        return app, out
+
+    def test_warns_when_not_monitored(self):
+        app, out = self._parse("牛来 跌破 0.1 提醒我", ["BTC-USDT"])
+        self.assertTrue(out["ok"])
+        self.assertEqual(app.rules[0].symbol, "牛来-USDT")
+        self.assertTrue(any("实时行情" in w for w in out["warnings"]), out["warnings"])
+        self.assertIn("实时行情", out["rules"][0]["hint"])
+
+    def test_quiet_when_monitored(self):
+        _, out = self._parse("牛来 跌破 0.1 提醒我", ["牛来-USDT"])
+        self.assertEqual(out["warnings"], [])
 
 
 if __name__ == "__main__":

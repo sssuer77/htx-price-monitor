@@ -104,6 +104,25 @@ class TestParser(unittest.TestCase):
         self.assertTrue(res.ok)
         self.assertEqual(res.rules[0].symbol, "SOL-USDT")
 
+    def test_chinese_contract_name(self):
+        # HTX 真有把汉字当合约代码的迷因币，中文名必须能建规则
+        r = self.one("牛来 跌破 0.1 提醒我")
+        self.assertEqual((r.symbol, r.type, r.level), ("牛来-USDT", "cross_down", 0.1))
+
+    def test_chinese_contract_glued_quote(self):
+        r = self.one("哈基米usdt 涨到 0.05 提醒")
+        self.assertEqual((r.symbol, r.type, r.level), ("哈基米-USDT", "cross_up", 0.05))
+
+    def test_chinese_alias_beats_literal_suffix(self):
+        # 「比特币USDT」要按别名认成 BTC-USDT，而不是生造出不存在的 比特币-USDT
+        r = self.one("比特币USDT 跌破 83000")
+        self.assertEqual(r.symbol, "BTC-USDT")
+
+    def test_known_symbols_from_watchlist(self):
+        res = parse("拉布布 涨到 1 提醒", known_symbols=["拉布布-USDT", "BTC-USDT"])
+        self.assertTrue(res.ok, res.warnings)
+        self.assertEqual(res.rules[0].symbol, "拉布布-USDT")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

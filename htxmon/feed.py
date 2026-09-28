@@ -367,7 +367,7 @@ class PriceFeed:
                 return
             try:
                 url = (f"{self.rest_base}/linear-swap-ex/market/history/kline"
-                       f"?contract_code={sym}&period=1min&size={size}")
+                       f"?contract_code={quote(sym, safe='')}&period=1min&size={size}")
                 data = http_json(url, timeout=15, verify=self.verify)
                 rows = data.get("data") or []
                 with self._lock:

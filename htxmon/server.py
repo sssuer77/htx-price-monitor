@@ -25,31 +25,33 @@ from .store import EventLog, RuleStore
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
-_SYMBOL_BASE_RE = re.compile(r"^[A-Z0-9]{1,15}$")
-
-
 def _normalize_symbol(raw: Any) -> str | None:
-    """把用户输入的各种写法统一成 BTC-USDT。不合法返回 None。
+    """把用户输入的各种写法统一成 BTC-USDT / 牛来-USDT。不合法返回 None。
 
-    只接受 ASCII 字母数字。中文（如「牛来-USDT」）必须挡在这里：
-    Python 的 str.isalnum() 对汉字也返回 True，放过去会让 REST 请求抛
-    "'ascii' codec can't encode" 编码错误，表现成「加进去了但永远没行情」。
+    注意：HTX 的合约代码**不都是 ASCII**。「牛来-USDT」「哈基米-USDT」
+    「币安人生-USDT」这类中文迷因币，交易所直接用汉字当合约代码，
+    所以这里允许任意语言的字母和数字（用 str.isalnum 判断）。
+    对应的要求是：调用方拼 URL 前必须做百分号编码，否则 urllib 会抛
+    "'ascii' codec can't encode" —— 那才是「加进去了却没行情」的真正原因。
     """
     # 空格 / 斜杠 / 下划线都当分隔符，避免「BTC USDT」被拼成「BTCUSDT-USDT」
-    sym = re.sub(r"[\s/_]+", "-", str(raw or "").upper().strip())
+    sym = re.sub(r"[\s/_]+", "-", str(raw or "").strip())
     sym = re.sub(r"-+", "-", sym).strip("-")
     if not sym:
         return None
     if "-" not in sym:
         sym += "-USDT"
-    base, _, quote_ = sym.partition("-")
-    if quote_ in ("", "USD"):
+    base, _, quote_ = sym.rpartition("-")
+    base = base.strip()
+    if quote_.upper() in ("", "USD"):
         quote_ = "USDT"
-    if quote_ != "USDT" or not _SYMBOL_BASE_RE.match(base):
+    if quote_.upper() != "USDT":
         return None
-    if base == "USDT":          # 「-USDT」这种写法会退化成 USDT-USDT，直接拒绝
+    if not (1 <= len(base) <= 15) or not base.isalnum():
         return None
-    return f"{base}-USDT"
+    if base.upper() == "USDT":   # 「-USDT」这种写法会退化成 USDT-USDT，直接拒绝
+        return None
+    return f"{base.upper()}-USDT"
 
 
 class App:
@@ -200,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---- 业务处理 ----
     def _handle_parse(self, body: dict) -> dict:
         text = str(body.get("text") or "").strip()
-        res = parse(text)
+        res = parse(text, known_symbols=self.app.feed.symbols)
         used_llm = False
         if not res.ok:
             llm_rules, err = parse_with_llm(text, self.app.cfg)
@@ -213,6 +215,11 @@ class Handler(BaseHTTPRequestHandler):
         out = []
         for rule in res.rules:
             hint = self.app.add_rule(rule)
+            if not self.app.feed.has_symbol(rule.symbol):
+                note = (f"{rule.symbol} 不在「实时行情」列表里，这条规则拿不到价格、不会触发，"
+                        f"请先在上面把它加进监控")
+                hint = f"{hint}｜{note}" if hint else note
+                res.warnings.append(note)
             out.append({"rule": rule.to_dict(), "describe": rule.describe(), "hint": hint})
         return {"ok": bool(res.rules), "rules": out, "warnings": res.warnings, "used_llm": used_llm}
 
@@ -262,8 +269,8 @@ class Handler(BaseHTTPRequestHandler):
         sym = _normalize_symbol(raw)
         if not sym:
             return {"ok": False,
-                    "error": f"「{raw}」不是合法的合约代码。只能填英文字母和数字，"
-                             f"正确写法例如 DOGE-USDT"}
+                    "error": f"「{raw}」不是合法的合约代码。写法是「币种-USDT」，"
+                             f"例如 DOGE-USDT、牛来-USDT（HTX 的中文合约代码可以直接写）"}
         feed = self.app.feed
         if feed.has_symbol(sym):
             return {"ok": True, "added": False, "symbol": sym, "symbols": list(feed.symbols)}

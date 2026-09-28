@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from .models import Rule
@@ -268,8 +269,13 @@ class ParseResult:
         return bool(self.rules)
 
 
-def parse(text: str, default_symbol: str | None = None) -> ParseResult:
-    """把一句（或几句）自然语言解析成监控规则。"""
+def parse(text: str, default_symbol: str | None = None,
+          known_symbols: Iterable[str] | None = None) -> ParseResult:
+    """把一句（或几句）自然语言解析成监控规则。
+
+    known_symbols 传当前监控列表，这样别名表里没有的中文合约（如「牛来-USDT」）
+    也能直接用中文名建立规则。
+    """
     res = ParseResult()
     if not text or not text.strip():
         res.warnings.append("内容为空")
@@ -281,7 +287,7 @@ def parse(text: str, default_symbol: str | None = None) -> ParseResult:
 
     last_symbol: str | None = default_symbol
     for clause in clauses:
-        sym, matched = detect_symbol(clause)
+        sym, matched = detect_symbol(clause, known_symbols)
         body = strip_symbol(clause, matched)
         if sym is None:
             if last_symbol:

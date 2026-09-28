@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import webbrowser
+from urllib.parse import quote
 
 from . import __version__, netutil
 from .config import ROOT, ensure_example, load_config
@@ -43,7 +44,8 @@ def cmd_check(cfg: dict) -> int:
     try:
         t0 = time.time()
         d = netutil.http_json(
-            f"{cfg['rest_base'].rstrip('/')}/linear-swap-ex/market/detail/merged?contract_code={sym}",
+            f"{cfg['rest_base'].rstrip('/')}/linear-swap-ex/market/detail/merged"
+            f"?contract_code={quote(sym, safe='')}",
             timeout=10, verify=cfg.get("tls_verify", True))
         ms = (time.time() - t0) * 1000
         print(f"[REST] {sym} 最新价 {d['tick']['close']}，往返 {ms:.0f}ms")

@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 import types
 import unittest
 from unittest import mock
@@ -82,6 +83,30 @@ class TestFeedSymbols(unittest.TestCase):
 
     def test_remove_missing_returns_false(self):
         self.assertFalse(self.feed.remove_symbol("NOPE-USDT"))
+
+
+class TestBootstrapOrder(unittest.TestCase):
+    """历史回补必须按时间升序存，否则 price_ago 的基准价会算错
+    （涨跌幅规则全靠它，倒序存会让「5 分钟涨 2%」这类规则全部失准）。"""
+
+    def setUp(self):
+        self.feed = PriceFeed({"symbols": ["牛来-USDT"], "rest_base": "https://x",
+                               "ws_url": "wss://x", "tls_verify": True,
+                               "history_bootstrap_min": 60})
+
+    def test_history_sorted_and_seeded_with_latest(self):
+        now = int(time.time())          # K 线的 id 是「秒」，和 time.time() 同单位
+        # 接口是升序返回的：i=0 是最旧的一根，i=59 是刚刚收的那根
+        rows = [{"id": now - (60 - i) * 60, "close": str(float(i))} for i in range(60)]
+        with mock.patch("htxmon.feed.http_json",
+                        return_value={"status": "ok", "data": rows}):
+            self.feed._bootstrap_history()
+        hist = list(self.feed._history["牛来-USDT"])
+        self.assertEqual(hist, sorted(hist), "历史必须是时间升序")
+        self.assertEqual(self.feed.price_ago("牛来-USDT", 300), 55.0,
+                         "5 分钟前的基准价应该是第 55 根")
+        self.assertEqual(self.feed.tick("牛来-USDT").price, 59.0,
+                         "种子价要用最新一根 K 线")
 
 
 class TestContractInfo(unittest.TestCase):

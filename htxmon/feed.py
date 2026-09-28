@@ -372,13 +372,19 @@ class PriceFeed:
                 rows = data.get("data") or []
                 with self._lock:
                     hist = self._history.setdefault(sym, deque())
-                    for row in reversed(rows):          # 接口返回按时间倒序
+                    # 接口按时间「升序」返回（旧 -> 新），必须照原序存：
+                    # price_ago() 用 bisect 定位基准价，存反了涨跌幅规则会全部算错
+                    for row in rows:
                         hist.append((float(row["id"]), float(row["close"])))
+                    if not all(hist[i][0] <= hist[i + 1][0] for i in range(len(hist) - 1)):
+                        merged = sorted(set(hist))      # 启动早期可能先塞进过实时 tick
+                        hist.clear()
+                        hist.extend(merged)
                     existing = self._ticks.get(sym)
                     if rows and existing is None:
-                        last = rows[0]
                         self._ticks[sym] = Tick(
-                            symbol=sym, price=float(last["close"]), local_ts=time.time(),
+                            symbol=sym, price=float(rows[-1]["close"]),
+                            local_ts=time.time(),
                             src="kline",
                         )
             except Exception as exc:

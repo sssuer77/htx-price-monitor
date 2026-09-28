@@ -8,3 +8,6 @@ venv/
 data/*.json
 data/*.jsonl
 config.json
+
+# 临时脚本（一次性分析用，不进仓库）
+.tmp-*
